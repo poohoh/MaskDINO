@@ -4,6 +4,7 @@ import argparse
 import glob
 import multiprocessing as mp
 import os
+import random
 
 # fmt: off
 import sys
@@ -76,7 +77,7 @@ def get_parser():
         default=[],
         nargs=argparse.REMAINDER,
     )
-    parser.add_argument('--root_dir', default='C:/Users/KimJunha/Desktop/test/car/000001', type=str, help='image dir')
+    parser.add_argument('--root_dir', default='C:/Users/KimJunha/Desktop/test/car', type=str, help='image root dir')
     parser.add_argument('--bg_dir', default='C:/Users/KimJunha/Desktop/test/background', type=str)
 
     return parser
@@ -98,6 +99,29 @@ def get_parser():
 #             return True
 #         return False
 
+def composite_with_mask(image, mask, bg_path):
+    # choose random background
+    backgrounds = glob.glob(os.path.join(bg_path, '*.png'))
+    background = random.choice(backgrounds)
+    background = cv2.imread(background)
+
+    # object only
+    object_only = cv2.bitwise_and(image, image, mask=mask)
+
+    # background only
+    inverse_mask = cv2.bitwise_not(mask)
+    background_only = cv2.bitwise_and(background, background, mask=inverse_mask)
+
+    # composite background
+    composite_result = cv2.add(object_only, background_only)
+
+    return object_only, background_only, composite_result
+
+# 차량의 번호 (e.g., 000001, 000002 (4), ...)
+def get_car_num(path):
+    result = path.split(os.sep) if os.sep in path else path.split('/')
+    result = result[-2].split('_')[-1]
+    return result
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)  # spawn: 부모 프로세스가 새로운 프로세스 시작 후 자식 프로세스 호출, force: 현재 설정된 시작 방법을 무시하고 새로운 방법 강제 설정
@@ -110,106 +134,43 @@ if __name__ == "__main__":
 
     demo = VisualizationDemo(cfg)
 
-    # read images
-    paths = glob.glob(os.path.join(args.root_dir, '**/*.png'), recursive=True)
+    dirs = [os.path.join(args.root_dir, f) for f in os.listdir(args.root_dir) if os.path.isdir(os.path.join(args.root_dir, f))]
+    print(dirs)
 
-    for path in tqdm.tqdm(paths, disable=not args.output):
-        # use PIL, to be consistent with evaluation
-        img = read_image(path, format="BGR")
-        start_time = time.time()
-        predictions, visualized_output = demo.run_on_image(img)
+    for dir in dirs:
+        dir_inside = [os.path.join(dir, f) for f in os.listdir(dir) if os.path.isdir(os.path.join(dir, f))]
+        dirs.extend(dir_inside)
 
-        # biggest mask
-        masks = predictions['instances'].get('pred_masks').cpu().numpy()
-        if len(masks) < 1:
-            continue
-        areas = [np.sum(mask) for mask in masks]
-        mask_main = masks[np.argmax(areas)]
-        mask_main = (mask_main * 255).astype(np.uint8)
+        # paths
+        img_paths = glob.glob(os.path.join(dir, '*.png'))
 
-        # cv2.imshow('mask_main', mask_main)
-        # cv2.waitKey()
-        # cv2.destroyAllWindows()
+        print('processing:', dir)
 
-        # save mask
-        save_dir = os.path.join(args.root_dir, 'output')
-        os.makedirs(save_dir, exist_ok=True)
-        img_name = os.path.splitext(os.path.basename(path))[0]
-        cv2.imwrite(os.path.join(save_dir, f'{img_name}_mask.png'), mask_main)
+        for img_path in tqdm.tqdm(img_paths, disable=not args.output):
+            # use PIL, to be consistent with evaluation
+            img = read_image(img_path, format="BGR")
+            start_time = time.time()
+            predictions, visualized_output = demo.run_on_image(img)
 
-        # logger.info(
-        #     "{}: {} in {:.2f}s".format(
-        #         path,
-        #         "detected {} instances".format(len(predictions["instances"]))
-        #         if "instances" in predictions
-        #         else "finished",
-        #         time.time() - start_time,
-        #     )
-        # )
+            # biggest mask
+            masks = predictions['instances'].get('pred_masks').cpu().numpy()
+            if len(masks) < 1:
+                continue
+            areas = [np.sum(mask) for mask in masks]
+            mask_main = masks[np.argmax(areas)]
+            mask_main = (mask_main * 255).astype(np.uint8)
 
-        # if args.output:
-        #     if os.path.isdir(args.output):
-        #         assert os.path.isdir(args.output), args.output
-        #         out_filename = os.path.join(args.output, os.path.basename(path))
-        #     else:
-        #         assert len(args.input) == 1, "Please specify a directory with args.output"
-        #         out_filename = args.output
-        #     visualized_output.save(out_filename)
-        # else:
-        #     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        #     cv2.imshow(WINDOW_NAME, visualized_output.get_image()[:, :, ::-1])
-        #     if cv2.waitKey(0) == 27:
-        #         break  # esc to quit
-    # elif args.webcam:
-    #     assert args.input is None, "Cannot have both --input and --webcam!"
-    #     assert args.output is None, "output not yet supported with --webcam!"
-    #     cam = cv2.VideoCapture(0)
-    #     for vis in tqdm.tqdm(demo.run_on_video(cam)):
-    #         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    #         cv2.imshow(WINDOW_NAME, vis)
-    #         if cv2.waitKey(1) == 27:
-    #             break  # esc to quit
-    #     cam.release()
-    #     cv2.destroyAllWindows()
-    # elif args.video_input:
-    #     video = cv2.VideoCapture(args.video_input)
-    #     width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    #     height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    #     frames_per_second = video.get(cv2.CAP_PROP_FPS)
-    #     num_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-    #     basename = os.path.basename(args.video_input)
-    #     codec, file_ext = (
-    #         ("x264", ".mkv") if test_opencv_video_format("x264", ".mkv") else ("mp4v", ".mp4")
-    #     )
-    #     if codec == ".mp4v":
-    #         warnings.warn("x264 codec not available, switching to mp4v")
-    #     if args.output:
-    #         if os.path.isdir(args.output):
-    #             output_fname = os.path.join(args.output, basename)
-    #             output_fname = os.path.splitext(output_fname)[0] + file_ext
-    #         else:
-    #             output_fname = args.output
-    #         assert not os.path.isfile(output_fname), output_fname
-    #         output_file = cv2.VideoWriter(
-    #             filename=output_fname,
-    #             # some installation of opencv may not support x264 (due to its license),
-    #             # you can try other format (e.g. MPEG)
-    #             fourcc=cv2.VideoWriter_fourcc(*codec),
-    #             fps=float(frames_per_second),
-    #             frameSize=(width, height),
-    #             isColor=True,
-    #         )
-    #     assert os.path.isfile(args.video_input)
-    #     for vis_frame in tqdm.tqdm(demo.run_on_video(video), total=num_frames):
-    #         if args.output:
-    #             output_file.write(vis_frame)
-    #         else:
-    #             cv2.namedWindow(basename, cv2.WINDOW_NORMAL)
-    #             cv2.imshow(basename, vis_frame)
-    #             if cv2.waitKey(1) == 27:
-    #                 break  # esc to quit
-    #     video.release()
-    #     if args.output:
-    #         output_file.release()
-    #     else:
-    #         cv2.destroyAllWindows()
+            # composite background
+            object_only, background_only, composite_result = composite_with_mask(img, mask_main, args.bg_dir)
+
+            # save results
+            car_num = get_car_num(img_path)
+            img_idx = os.path.splitext(os.path.basename(img_path))[0]
+            mask_dir = os.path.join(args.root_dir, '..', 'mask_result', car_num)
+            composite_dir = os.path.join(args.root_dir, '..', 'composite_result', car_num)
+            os.makedirs(mask_dir, exist_ok=True)
+            os.makedirs(composite_dir, exist_ok=True)
+
+            cv2.imwrite(os.path.join(mask_dir, f'{img_idx}_mask.png'), mask_main)
+            cv2.imwrite(os.path.join(mask_dir, f'{img_idx}_object.png'), object_only)
+            cv2.imwrite(os.path.join(composite_dir, f'{img_idx}_composite.png'), composite_result)
