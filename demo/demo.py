@@ -47,7 +47,7 @@ def get_parser():
     parser = argparse.ArgumentParser(description="maskdino demo for builtin configs")
     parser.add_argument(
         "--config-file",
-        default="configs/coco/instance-segmentation/maskdino_R50_bs16_50ep_3s.yaml",
+        default="configs/coco/instance-segmentation/maskdino_R50_bs16_50ep_4s_dowsample1_2048.yaml",
         metavar="FILE",
         help="path to config file",
     )
@@ -74,30 +74,13 @@ def get_parser():
     parser.add_argument(
         "--opts",
         help="Modify config options using the command-line 'KEY VALUE' pairs",
-        default=[],
+        default=['MODEL.WEIGHTS', 'weights/maskdino_swinl_50ep_300q_hid2048_3sd1_instance_mask52.1ap_box58.3ap.pth'],
         nargs=argparse.REMAINDER,
     )
     parser.add_argument('--root_dir', default='C:/Users/KimJunha/Desktop/test/car', type=str, help='image root dir')
     parser.add_argument('--bg_dir', default='C:/Users/KimJunha/Desktop/test/background', type=str)
 
     return parser
-
-
-# def test_opencv_video_format(codec, file_ext):
-#     with tempfile.TemporaryDirectory(prefix="video_format_test") as dir:
-#         filename = os.path.join(dir, "test_file" + file_ext)
-#         writer = cv2.VideoWriter(
-#             filename=filename,
-#             fourcc=cv2.VideoWriter_fourcc(*codec),
-#             fps=float(30),
-#             frameSize=(10, 10),
-#             isColor=True,
-#         )
-#         [writer.write(np.zeros((10, 10, 3), np.uint8)) for _ in range(30)]
-#         writer.release()
-#         if os.path.isfile(filename):
-#             return True
-#         return False
 
 def composite_with_mask(image, mask, bg_path):
     # choose random background
@@ -123,19 +106,27 @@ def get_car_num(path):
     result = result[-2].split('_')[-1]
     return result
 
+def get_biggest_mask(masks):
+    # remove masks bigger than 4000
+    areas = np.array([np.sum(mask) for mask in masks])
+    inds = np.where(areas < 3800)[0]
+    areas = areas[inds]
+    masks = masks[inds]
+
+    # biggest mask
+    mask_main = masks[np.argmax(areas)]
+    mask_main = (mask_main * 255).astype(np.uint8)
+
+    return mask_main
+
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)  # spawn: 부모 프로세스가 새로운 프로세스 시작 후 자식 프로세스 호출, force: 현재 설정된 시작 방법을 무시하고 새로운 방법 강제 설정
     args = get_parser().parse_args()
-    setup_logger(name="fvcore")  # logger 설정 함수, logger의 이름이 fvcore
-    logger = setup_logger()  # 기본 로거 설정
-    logger.info("Arguments: " + str(args))  # 로그 메시지를 info level로 출력. args 출력
 
     cfg = setup_cfg(args)
-
     demo = VisualizationDemo(cfg)
 
-    dirs = [os.path.join(args.root_dir, f) for f in os.listdir(args.root_dir) if os.path.isdir(os.path.join(args.root_dir, f))]
-    print(dirs)
+    dirs = [args.root_dir]
 
     for dir in dirs:
         dir_inside = [os.path.join(dir, f) for f in os.listdir(dir) if os.path.isdir(os.path.join(dir, f))]
@@ -152,13 +143,11 @@ if __name__ == "__main__":
             start_time = time.time()
             predictions, visualized_output = demo.run_on_image(img)
 
-            # biggest mask
+            # get biggest mask
             masks = predictions['instances'].get('pred_masks').cpu().numpy()
             if len(masks) < 1:
                 continue
-            areas = [np.sum(mask) for mask in masks]
-            mask_main = masks[np.argmax(areas)]
-            mask_main = (mask_main * 255).astype(np.uint8)
+            mask_main = get_biggest_mask(masks)
 
             # composite background
             object_only, background_only, composite_result = composite_with_mask(img, mask_main, args.bg_dir)
